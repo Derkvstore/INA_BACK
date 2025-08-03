@@ -1,3 +1,4 @@
+// backend/ventes.js
 const express = require('express');
 const router = express.Router();
 const { pool } = require('./db'); // Assurez-vous que le chemin vers db.js est correct
@@ -364,12 +365,17 @@ router.post('/cancel-item', async (req, res) => {
         return res.status(404).json({ error: 'Article de vente non trouvé ou déjà annulé.' });
     }
 
-    if (!is_special_sale_item && produitId) {
+    // DÉBUT DE LA MODIFICATION POUR RÉINTÉGRER AU STOCK
+    // Si c'est un produit de la table 'products', réactivez-le en stock,
+    // quelle que soit la valeur de 'is_special_sale_item'.
+    // La condition '!is_special_sale_item' a été supprimée ici.
+    if (produitId) { // Vérifie si un produit_id est associé, indiquant un article de stock régulier
         await clientDb.query(
             'UPDATE products SET status = $1 WHERE id = $2 AND imei = $3',
             ['active', produitId, imei]
         );
     }
+    // FIN DE LA MODIFICATION
 
     // Recalculer le montant total de la vente après annulation de l'article
     const recalculatedSaleTotalResult = await clientDb.query(
@@ -683,10 +689,10 @@ router.post('/mark-as-rendu', async (req, res) => {
 
     // 2. Remettre le produit en 'active' dans la table products, quelle que soit is_special_sale_item
     // C'est la modification clé : suppression de la condition `!is_special_sale_item`
-    if (produit_id) {
+    if (produitId) {
       await clientDb.query(
         'UPDATE products SET status = $1, quantite = 1, date_ajout = NOW() WHERE id = $2 AND imei = $3', // Ajout de quantite=1 et date_ajout=NOW()
-        ['active', produit_id, imei]
+        ['active', produitId, imei]
       );
     }
 
@@ -854,7 +860,7 @@ router.get('/:id/pdf', async (req, res) => {
     const htmlContent = `
       <div style="font-family: 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; padding: 20px;">
         <div style="text-align: center; margin-bottom: 20px;">
-          <h1 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 24px;">Facture de Vente</h1>
+          <h1 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 24px;">Niangadou ELECTRO</h1>
         </div>
 
         <table style="width: 100%; margin-bottom: 40px; margin-top: 20px;">
@@ -866,9 +872,10 @@ router.get('/:id/pdf', async (req, res) => {
               <p style="font-size: 14px;"><strong>Téléphone:</strong> ${sale.client_telephone || 'N/A'}</p>
             </td>
             <td style="vertical-align: top; width: 50%; text-align: right;">
-              <h2 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 18px; margin-bottom: 5px;">[ALY MEGA STORE]</h2>
-              <p style="font-size: 12px;">Tél : [79 79 83 77]</p>
-              <p style="font-size: 12px;">Adresse : [Halle de Bamako]</p>
+              <h2 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 18px; margin-bottom: 5px;"></h2>
+              <p style="font-size: 12px;">Tél : 82 82 02 02</p>
+              <p style="font-size: 12px;">Adresse : Halle de Bamako</p>
+              <p style="font-size: 12px;">Près de la Pharmacie </p>
             </td>
           </tr>
         </table>
