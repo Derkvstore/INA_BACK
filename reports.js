@@ -132,23 +132,21 @@ router.get('/dashboard-stats', async (req, res) => {
     );
     const returnedTodayArrivage = parseInt(returnedTodayArrivageResult.rows[0].count, 10);
 
-    // Pièces rendues aujourd'hui (Carton)
+    // Pièces rendues aujourd'hui (Carton) - REQUÊTE CORRIGÉE
     const renduTodayCartonResult = await client.query(
       `SELECT COALESCE(SUM(vi.quantite_vendue), 0) AS count
        FROM vente_items vi
-       JOIN ventes v ON vi.vente_id = v.id
        JOIN products p ON vi.produit_id = p.id
-       WHERE p.type = 'CARTON' AND v.date_vente::date = CURRENT_DATE AND vi.statut_vente = 'rendu';`
+       WHERE p.type = 'CARTON' AND vi.rendu_date::date = CURRENT_DATE AND vi.statut_vente = 'rendu';`
     );
     const renduTodayCarton = parseInt(renduTodayCartonResult.rows[0].count, 10);
 
-    // Pièces rendues aujourd'hui (Arrivage)
+    // Pièces rendues aujourd'hui (Arrivage) - REQUÊTE CORRIGÉE
     const renduTodayArrivageResult = await client.query(
       `SELECT COALESCE(SUM(vi.quantite_vendue), 0) AS count
        FROM vente_items vi
-       JOIN ventes v ON vi.vente_id = v.id
        JOIN products p ON vi.produit_id = p.id
-       WHERE p.type = 'ARRIVAGE' AND v.date_vente::date = CURRENT_DATE AND vi.statut_vente = 'rendu';`
+       WHERE p.type = 'ARRIVAGE' AND vi.rendu_date::date = CURRENT_DATE AND vi.statut_vente = 'rendu';`
     );
     const renduTodayArrivage = parseInt(renduTodayArrivageResult.rows[0].count, 10);
 

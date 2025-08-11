@@ -1,4 +1,3 @@
-// backend/ventes.js
 const express = require('express');
 const router = express.Router();
 const { pool } = require('./db'); // Assurez-vous que le chemin vers db.js est correct
@@ -365,17 +364,12 @@ router.post('/cancel-item', async (req, res) => {
         return res.status(404).json({ error: 'Article de vente non trouvé ou déjà annulé.' });
     }
 
-    // DÉBUT DE LA MODIFICATION POUR RÉINTÉGRER AU STOCK
-    // Si c'est un produit de la table 'products', réactivez-le en stock,
-    // quelle que soit la valeur de 'is_special_sale_item'.
-    // La condition '!is_special_sale_item' a été supprimée ici.
-    if (produitId) { // Vérifie si un produit_id est associé, indiquant un article de stock régulier
+    if (!is_special_sale_item && produitId) {
         await clientDb.query(
             'UPDATE products SET status = $1 WHERE id = $2 AND imei = $3',
             ['active', produitId, imei]
         );
     }
-    // FIN DE LA MODIFICATION
 
     // Recalculer le montant total de la vente après annulation de l'article
     const recalculatedSaleTotalResult = await clientDb.query(
@@ -676,9 +670,9 @@ router.post('/mark-as-rendu', async (req, res) => {
     clientDb = await pool.connect();
     await clientDb.query('BEGIN');
 
-    // 1. Mettre à jour le statut de l'article de vente à 'rendu'
+    // 1. Mettre à jour le statut de l'article de vente à 'rendu' et AJOUTER la date du rendu
     const updateItemResult = await clientDb.query(
-      'UPDATE vente_items SET statut_vente = $1, cancellation_reason = $2 WHERE id = $3 AND vente_id = $4 RETURNING *',
+      'UPDATE vente_items SET statut_vente = $1, cancellation_reason = $2, rendu_date = NOW() WHERE id = $3 AND vente_id = $4 RETURNING *',
       ['rendu', reason, vente_item_id, vente_id]
     );
 
@@ -687,12 +681,13 @@ router.post('/mark-as-rendu', async (req, res) => {
       return res.status(404).json({ error: 'Article de vente non trouvé ou déjà marqué comme rendu.' });
     }
 
-    // 2. Remettre le produit en 'active' dans la table products, quelle que soit is_special_sale_item
-    // C'est la modification clé : suppression de la condition `!is_special_sale_item`
-    if (produitId) {
+    // 2. Remettre le produit en 'active' dans la table products SANS toucher à la date d'ajout
+    if (produit_id) {
       await clientDb.query(
-        'UPDATE products SET status = $1, quantite = 1, date_ajout = NOW() WHERE id = $2 AND imei = $3', // Ajout de quantite=1 et date_ajout=NOW()
-        ['active', produitId, imei]
+        // Correction ici : on retire `date_ajout = NOW()`
+        // et on utilise `quantite = quantite + 1`
+        'UPDATE products SET status = $1, quantite = quantite + 1 WHERE id = $2 AND imei = $3',
+        ['active', produit_id, imei]
       );
     }
 
@@ -700,7 +695,7 @@ router.post('/mark-as-rendu', async (req, res) => {
     const recalculatedSaleTotalResult = await clientDb.query(
       `SELECT COALESCE(SUM(vi.prix_unitaire_vente * vi.quantite_vendue), 0) AS new_montant_total
        FROM vente_items vi
-       WHERE vi.vente_id = $1 AND vi.statut_vente = 'actif'`, // Seuls les articles actifs comptent
+       WHERE vi.vente_id = $1 AND vi.statut_vente = 'actif'`,
       [vente_id]
     );
     const newMontantTotal = parseFloat(recalculatedSaleTotalResult.rows[0].new_montant_total);
@@ -713,8 +708,8 @@ router.post('/mark-as-rendu', async (req, res) => {
       newStatutPaiement = 'payee_integralement';
     } else if (currentMontantPaye > 0) {
       newStatutPaiement = 'paiement_partiel';
-    } else if (newMontantTotal === 0 && currentMontantPaye === 0) { // Cas où la vente est vide et rien n'a été payé
-      newStatutPaiement = 'annulee'; // Ou un statut spécifique pour les ventes rendues sans paiement
+    } else if (newMontantTotal === 0 && currentMontantPaye === 0) {
+      newStatutPaiement = 'annulee';
     }
 
 
@@ -742,7 +737,7 @@ router.post('/mark-as-rendu', async (req, res) => {
 
     if (parseInt(inactive_items, 10) === parseInt(total_items, 10)) {
         await clientDb.query(
-            'UPDATE ventes SET statut_paiement = \'annulee\' WHERE id = $1', // Ou un autre statut comme 'vente_rendue'
+            'UPDATE ventes SET statut_paiement = \'annulee\' WHERE id = $1',
             [vente_id]
         );
         // Mettre à jour également la facture si la vente entière est annulée
@@ -819,7 +814,7 @@ router.get('/:id/pdf', async (req, res) => {
       GROUP BY
           v.id, c.nom, c.telephone;
     `;
-    const result = await clientDb.query(saleDetailsQuery, [venteId]); // Correction: utilisation de 'saleDetailsQuery'
+    const result = await clientDb.query(saleDetailsQuery, [venteId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Vente non trouvée.' });
@@ -827,84 +822,179 @@ router.get('/:id/pdf', async (req, res) => {
 
     const sale = result.rows[0];
     const balanceDue = sale.montant_total - sale.montant_paye;
+    const totalPieces = sale.articles.reduce((acc, item) => acc + item.quantite_vendue, 0);
 
     let articlesHtml = sale.articles.map(item => {
       let descriptionParts = [item.marque, item.modele];
-      if (item.stockage) {
-        descriptionParts.push(`(${item.stockage})`);
-      }
-
-      let typeInfo = '';
-      if (item.type === 'CARTON' && item.type_carton) {
-        typeInfo = `(CARTON ${item.type_carton})`;
-      } else if (item.type) {
-        typeInfo = `(${item.type})`;
-      }
-      if (typeInfo) {
-        descriptionParts.push(typeInfo);
-      }
-
+      if (item.stockage) descriptionParts.push(`${item.stockage}`);
+      if (item.type_carton) descriptionParts.push(`(Carton ${item.type_carton})`);
+      if (item.type && item.type !== 'CARTON') descriptionParts.push(`(${item.type})`);
+      
       const itemDescription = descriptionParts.join(' ');
+      const totalPrice = item.prix_unitaire_vente * item.quantite_vendue;
 
       return `
-        <tr>
-          <td style="padding: 8px; border: 1px solid #e0e0e0; font-size: 11px;">${itemDescription}</td>
-          <td style="padding: 8px; border: 1px solid #e0e0e0; font-size: 11px;">${item.imei}</td>
-          <td style="padding: 8px; border: 1px solid #e0e0e0; text-align: right; font-size: 11px;">${item.quantite_vendue}</td>
-          <td style="padding: 8px; border: 1px solid #e0e0e0; text-align: right; font-size: 11px;">${formatAmount(item.prix_unitaire_vente)}</td>
-          <td style="padding: 8px; border: 1px solid #e0e0e0; text-align: right; font-size: 11px;">${formatAmount(item.prix_unitaire_vente * item.quantite_vendue)}</td>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 8px; text-align: left; font-size: 10px; width: 30%;">${itemDescription}</td>
+          <td style="padding: 8px; text-align: left; font-size: 10px; width: 25%;">${item.imei}</td>
+          <td style="padding: 8px; text-align: right; font-size: 10px; width: 10%;">${item.quantite_vendue}</td>
+          <td style="padding: 8px; text-align: right; font-size: 10px; width: 15%;">${formatAmount(item.prix_unitaire_vente)}</td>
+          <td style="padding: 8px; text-align: right; font-size: 10px; font-weight: 500; width: 20%;">${formatAmount(totalPrice)}</td>
         </tr>
       `;
     }).join('');
 
-    const htmlContent = `
-      <div style="font-family: 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; padding: 20px;">
-        <div style="text-align: center; margin-bottom: 20px;">
-          <h1 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 24px;">Niangadou ELECTRO</h1>
-        </div>
+   const htmlContent = `
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "San Francisco", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    color: #1d1d1f;
+    background-color: #ffffff;
+  }
+  .invoice-container {
+    max-width: 700px;
+    margin: auto;
+    padding: 40px;
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #eaeaea;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 20px;
+    margin-bottom: 30px;
+  }
+  .header-logo-container img {
+    height: 40px;
+    object-fit: contain;
+  }
+  .header-info {
+    text-align: right;
+  }
+  .header-info h2 {
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+  }
+  .header-info p {
+    margin: 4px 0;
+    font-size: 13px;
+    color: #555;
+  }
+  .section-title {
+    font-size: 16px;
+    margin-bottom: 10px;
+    font-weight: 600;
+    color: #333;
+  }
+  .invoice-details {
+    margin-bottom: 30px;
+  }
+  .invoice-details p {
+    margin: 4px 0;
+    font-size: 13px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 30px;
+  }
+  table thead th {
+    text-align: left;
+    border-bottom: 1px solid #ccc;
+    padding: 8px 4px;
+    font-weight: 600;
+    color: #333;
+  }
+  table tbody td {
+    padding: 8px 4px;
+    border-bottom: 1px solid #eee;
+  }
+  .summary {
+    text-align: right;
+    max-width: 300px;
+    margin-left: auto;
+    background-color: #f9f9f9;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #eee;
+  }
+  .summary p {
+    margin: 6px 0;
+    font-size: 14px;
+  }
+  .summary h3 {
+    margin-top: 10px;
+    font-size: 18px;
+    color: #d00;
+  }
+  .footer {
+    text-align: center;
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 40px;
+  }
+</style>
 
-        <table style="width: 100%; margin-bottom: 40px; margin-top: 20px;">
-          <tr>
-            <td style="vertical-align: top; width: 50%; text-align: left;">
-              <p style="font-size: 14px;"><strong>Numéro de Vente:</strong> ${sale.vente_id}</p>
-              <p style="font-size: 14px;"><strong>Date de Vente:</strong> ${formatDate(sale.date_vente)}</p>
-              <p style="font-size: 14px;"><strong>Client:</strong> ${sale.client_nom}</p>
-              <p style="font-size: 14px;"><strong>Téléphone:</strong> ${sale.client_telephone || 'N/A'}</p>
-            </td>
-            <td style="vertical-align: top; width: 50%; text-align: right;">
-              <h2 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 18px; margin-bottom: 5px;"></h2>
-              <p style="font-size: 12px;">Tél : 82 82 02 02</p>
-              <p style="font-size: 12px;">Adresse : Halle de Bamako</p>
-              <p style="font-size: 12px;">Près de la Pharmacie </p>
-            </td>
-          </tr>
-        </table>
+<div class="invoice-container">
+  <div class="header">
+    <div class="header-logo-container">
+      <!-- 🔽 Place ton logo ici -->
+      <img src="LOGO_URL_HERE" alt="Logo" />
+      <h1 color = "red" >DAFF TELECOM </h1>
+      <p style="font-size: 11px; color: #666; margin-top: 6px;">Halle de Bamako<br/>Tél: 79 79 83 77</p>
+    </div>
+    <div class="header-info">
+      <h2>Facture</h2>
+      <p><strong>ID:</strong> #${sale.vente_id}</p>
+      <p><strong>Date:</strong> ${formatDate(sale.date_vente)}</p>
+    </div>
+  </div>
 
-        <h2 style="color: #007AFF; font-family: 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 18px; margin-bottom: 15px;">Articles Vendus:</h2>
-        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-family: 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333;">
-          <thead>
-            <tr style="background-color: #e0f2ff; color: #007AFF;">
-              <th style="padding: 10px; border: 1px solid #a0d9ff; text-align: left; font-size: 12px;">Article</th>
-              <th style="padding: 10px; border: 1px solid #a0d9ff; text-align: left; font-size: 12px;">IMEI</th>
-              <th style="padding: 10px; border: 1px solid #a0d9ff; text-align: right; font-size: 12px;">Qté</th>
-              <th style="padding: 10px; border: 1px solid #a0d9ff; text-align: right; font-size: 12px;">P.Unit</th>
-              <th style="padding: 10px; border: 1px solid #e0e0e0; text-align: right; font-size: 12px;">Montant</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${articlesHtml}
-          </tbody>
-        </table>
+  <div class="invoice-details">
+    <p class="section-title">Facturé à:</p>
+    <p><strong>Nom:</strong> ${sale.client_nom}</p>
+    <p><strong>Téléphone:</strong> ${sale.client_telephone || 'N/A'}</p>
+  </div>
 
-        <div style="text-align: right; font-family: 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; margin-top: 20px;">
-          <p style="font-size: 16px;"><strong>Montant Total:</strong> ${formatAmount(sale.montant_total)} CFA</p>
-          <p style="font-size: 16px;"><strong>Montant Payé:</strong> ${formatAmount(sale.montant_paye)} CFA</p>
-          <p style="font-size: 18px; font-weight: bold; color: #D9534F;">Balance Due: ${formatAmount(balanceDue)} CFA</p>
-        </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Article</th>
+        <th>IMEI</th>
+        <th style="text-align: right;">Qté</th>
+        <th style="text-align: right;">P.Unit</th>
+        <th style="text-align: right;">Montant</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${articlesHtml}
+    </tbody>
+  </table>
 
-        <p style="text-align: center; margin-top: 30px; font-family: 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: italic; color: #777;">Merci pour votre achat!</p>
-      </div>
-    `;
+  <p style="text-align: right; font-size: 13px;"><strong>Nombre de pièces:</strong> ${totalPieces}</p>
+
+  <div class="summary">
+    <p><strong>Montant total:</strong> ${formatAmount(sale.montant_total)} CFA</p>
+    <p><strong>Montant payé:</strong> ${formatAmount(sale.montant_paye)} CFA</p>
+    <h3>Restant: ${formatAmount(balanceDue)} CFA </h3>
+  </div>
+
+  <div class="footer">
+    <p>Merci pour votre achat !</p>
+    <p>Facture générée automatiquement</p>
+  </div>
+</div>
+`;
 
     const options = {
       format: 'A4',
