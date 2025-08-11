@@ -1,4 +1,3 @@
-// backend/server.js
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -46,12 +45,12 @@ app.use(cors({
 app.use(express.json());
 
 /* --- ROUTES --- */
-// Pour l'authentification, utilisez les fonctions directement avec app.post()
-app.post('/api/login', loginUser);
-app.post('/api/register', registerUser); // Si vous avez une route d'enregistrement
 
-// Utilisez app.use() pour les autres routeurs qui exportent "router"
-// Vérifiez que les chemins d'accès ici correspondent à la structure de vos fichiers
+// Auth
+app.post('/api/login', loginUser);
+app.post('/api/register', registerUser);
+
+// Routes principales
 app.use('/api/clients', clientsRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/ventes', ventesRoutes);
@@ -60,81 +59,105 @@ app.use('/api/returns', returnsRouter);
 app.use('/api/remplacements', remplacerRouter);
 app.use('/api/fournisseurs', fournisseursRoutes);
 app.use('/api/factures', facturesRoutes);
-app.use('/api/special-orders', specialOrdersRoutes); // NOUVELLE ROUTE pour les commandes spéciales
+app.use('/api/special-orders', specialOrdersRoutes);
 
-// Nouvelle route GET pour calculer les bénéfices totaux et détaillés
-app.get('/api/benefices', async (req, res) => {
-    try {
-        let query = `
-            SELECT
-                vi.id AS vente_item_id,
-                vi.marque,
-                vi.modele,
-                vi.stockage,
-                vi.type,
-                vi.type_carton,
-                vi.imei,
-                vi.prix_unitaire_achat,
-                vi.prix_unitaire_vente,
-                vi.quantite_vendue,
-                (vi.prix_unitaire_vente - vi.prix_unitaire_achat) AS benefice_unitaire_produit,
-                (vi.quantite_vendue * (vi.prix_unitaire_vente - vi.prix_unitaire_achat)) AS benefice_total_par_ligne,
-                v.date_vente -- SÉLECTION DE LA DATE DE VENTE
-            FROM
-                vente_items vi
-            JOIN
-                ventes v ON vi.vente_id = v.id
-            WHERE
-                vi.statut_vente = 'actif' -- Ne considère que les articles activement vendus
-                AND v.statut_paiement = 'payee_integralement' -- La vente doit être intégralement payée (inclut détail et gros)
-        `;
-        const queryParams = [];
-        let paramIndex = 1;
+// Route pour les statistiques du tableau de bord (nouvelle)
+app.get('/api/reports/dashboard-stats', async (req, res) => {
+  try {
+    const [
+      totalCartonsResult,
+      totalArrivageResult,
+      totalVentesResult,
+      totalReturnedResult,
+      totalSentToSupplierResult
+    ] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM cartons'),
+      pool.query('SELECT COUNT(*) FROM produits'),
+      pool.query('SELECT COUNT(*) FROM ventes'),
+      pool.query('SELECT COUNT(*) FROM retours'),
+      pool.query('SELECT COUNT(*) FROM remplacements')
+    ]);
 
-        const { date } = req.query; // Récupère le paramètre 'date' de la requête (ex: /api/benefices?date=2023-01-15)
+    const dashboardStats = {
+      totalCartons: parseInt(totalCartonsResult.rows[0].count, 10),
+      totalArrivage: parseInt(totalArrivageResult.rows[0].count, 10),
+      totalVentes: parseInt(totalVentesResult.rows[0].count, 10),
+      totalReturned: parseInt(totalReturnedResult.rows[0].count, 10),
+      totalSentToSupplier: parseInt(totalSentToSupplierResult.rows[0].count, 10)
+    };
 
-        if (date) {
-            // Validation simple du format de la date (YYYY-MM-DD)
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-                return res.status(400).json({ error: 'Format de date invalide. Utilisez YYYY-MM-DD.' });
-            }
-            // Condition pour filtrer par la date de vente
-            query += ` AND DATE(v.date_vente) = $${paramIndex}`;
-            queryParams.push(date);
-            paramIndex++;
-        }
-
-        query += ` ORDER BY v.date_vente DESC;`; // Trie par date de vente pour voir les plus récents en premier
-
-        const itemsResult = await pool.query(query, queryParams);
-
-        const soldItems = itemsResult.rows;
-
-        // --- DÉBOGAGE : AFFICHER LES DONNÉES AVANT L'ENVOI AU FRONTEND ---
-        console.log("Données des articles vendus envoyées au frontend (vérifiez 'date_vente'):");
-        soldItems.forEach(item => {
-            console.log(`  IMEI: ${item.imei}, Date Vente: ${item.date_vente}, Bénéfice: ${item.benefice_total_par_ligne}`);
-        });
-        // --- FIN DÉBOGAGE ---
-
-        // Calcul du bénéfice total global à partir des résultats détaillés
-        let totalBeneficeGlobal = 0;
-        soldItems.forEach(item => {
-            totalBeneficeGlobal += parseFloat(item.benefice_total_par_ligne);
-        });
-
-        // Envoie la liste des articles vendus avec leurs bénéfices et le bénéfice total global
-        res.json({
-            sold_items: soldItems,
-            total_benefice_global: parseFloat(totalBeneficeGlobal)
-        });
-
-    } catch (err) {
-        console.error('Erreur lors du calcul des bénéfices:', err);
-        res.status(500).json({ error: 'Erreur interne du serveur lors du calcul des bénéfices.' });
-    }
+    res.json(dashboardStats);
+  } catch (err) {
+    console.error('Erreur lors de la récupération des statistiques du tableau de bord:', err);
+    res.status(500).json({ error: 'Erreur serveur lors de la récupération des statistiques du tableau de bord.' });
+  }
 });
 
+
+// Route bénéfices
+app.get('/api/benefices', async (req, res) => {
+  try {
+    let query = `
+      SELECT
+          vi.id AS vente_item_id,
+          vi.marque,
+          vi.modele,
+          vi.stockage,
+          vi.type,
+          vi.type_carton,
+          vi.imei,
+          vi.prix_unitaire_achat,
+          vi.prix_unitaire_vente,
+          vi.quantite_vendue,
+          (vi.prix_unitaire_vente - vi.prix_unitaire_achat) AS benefice_unitaire_produit,
+          (vi.quantite_vendue * (vi.prix_unitaire_vente - vi.prix_unitaire_achat)) AS benefice_total_par_ligne,
+          v.date_vente
+      FROM
+          vente_items vi
+      JOIN
+          ventes v ON vi.vente_id = v.id
+      JOIN
+          factures f ON v.id = f.vente_id
+      WHERE
+          vi.statut_vente = 'actif'
+          AND f.statut_facture = 'payee_integralement'
+    `;
+
+    const queryParams = [];
+    let paramIndex = 1;
+
+    const { date } = req.query;
+
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Format de date invalide. Utilisez YYYY-MM-DD.' });
+      }
+
+      query += ` AND DATE(v.date_vente) = $${paramIndex}`;
+      queryParams.push(date);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY v.date_vente DESC;`;
+
+    const itemsResult = await pool.query(query, queryParams);
+    const soldItems = itemsResult.rows;
+
+    let totalBeneficeGlobal = 0;
+    soldItems.forEach(item => {
+      totalBeneficeGlobal += parseFloat(item.benefice_total_par_ligne);
+    });
+
+    res.json({
+      sold_items: soldItems,
+      total_benefice_global: parseFloat(totalBeneficeGlobal)
+    });
+
+  } catch (err) {
+    console.error('Erreur lors du calcul des bénéfices:', err);
+    res.status(500).json({ error: 'Erreur interne du serveur lors du calcul des bénéfices.' });
+  }
+});
 
 /* --- DÉMARRAGE DU SERVEUR --- */
 app.listen(PORT, () => {
