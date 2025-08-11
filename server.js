@@ -4,13 +4,9 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 dotenv.config();
 
-// Importez la connexion à la base de données (pool)
 const { pool } = require('./db');
-
-// Importez les fonctions spécifiques de auth.js de manière destructurée
 const { registerUser, loginUser } = require('./auth');
 
-// Assurez-vous que ces chemins sont corrects par rapport à l'emplacement de server.js
 const clientsRoutes = require('./clients');
 const productRoutes = require('./products');
 const ventesRoutes = require('./ventes');
@@ -19,18 +15,37 @@ const returnsRouter = require('./returns');
 const remplacerRouter = require('./remplacements');
 const fournisseursRoutes = require('./fournisseurs');
 const facturesRoutes = require('./factures');
-const specialOrdersRoutes = require('./specialOrders'); // NOUVEL IMPORT pour les commandes spéciales
+const specialOrdersRoutes = require('./specialOrders');
 
 const app = express();
+const PORT = process.env.PORT || 3001;
 
+// ✅ CORS autorisé pour Railway Front + localhost et ton site Vercel
+const allowedOrigins = [
+   'https://inaback-production.up.railway.app',
+//    'https://daff-telecom.vercel.app', // ✅ CORRECT sans /
+   'http://localhost:5173'
+];
+
+
+// ✅ Middleware CORS propre
 app.use(cors({
-  origin: 'http://localhost:5173', // CONSERVÉ COMME DEMANDÉ
-  credentials: true
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// ✅ Parser JSON
 app.use(express.json());
 
-// --- ROUTES ---
+/* --- ROUTES --- */
 // Pour l'authentification, utilisez les fonctions directement avec app.post()
 app.post('/api/login', loginUser);
 app.post('/api/register', registerUser); // Si vous avez une route d'enregistrement
@@ -121,8 +136,8 @@ app.get('/api/benefices', async (req, res) => {
 });
 
 
-// --- DÉMARRAGE DU SERVEUR ---
-app.listen(process.env.PORT || 3001, () => {
+/* --- DÉMARRAGE DU SERVEUR --- */
+app.listen(PORT, () => {
   console.log('✅ Connexion à la base de données réussie');
-  console.log(`🚀 Serveur backend lancé sur http://localhost:${process.env.PORT || 3001}`);
+  console.log(`🚀 Serveur backend lancé sur le port ${PORT}`);
 });
