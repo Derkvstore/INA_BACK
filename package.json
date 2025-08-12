@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js",  
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -17,11 +17,12 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
-    "html-pdf": "^3.0.1",
+    "html-pdf": "^1.5.0",
     "jsonwebtoken": "^9.0.2",
     "moment-timezone": "^0.6.0",
     "pdfkit": "^0.17.1",
     "pg": "^8.16.3",
+    "puppeteer": "^24.16.1",
     "puppeteer-core": "^24.15.0"
   }
 }

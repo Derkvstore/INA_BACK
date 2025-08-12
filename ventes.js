@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('./db'); // Assurez-vous que le chemin vers db.js est correct
-const pdf = require('html-pdf'); // Importation de la bibliothèque html-pdf
+const puppeteer = require('puppeteer'); // Importation de la bibliothèque puppeteer
 
 // Fonction utilitaire pour formater les montants
 const formatAmount = (amount) => {
@@ -670,7 +670,8 @@ router.post('/mark-as-rendu', async (req, res) => {
     clientDb = await pool.connect();
     await clientDb.query('BEGIN');
 
-    // 1. Mettre à jour le statut de l'article de vente à 'rendu' et AJOUTER la date du rendu
+    // 1. Mettre à jour le statut de l'article de vente à 'rendu' et ENREGISTRER la date du rendu
+    // Assurez-vous que la colonne 'rendu_date' existe bien dans votre table 'vente_items'
     const updateItemResult = await clientDb.query(
       'UPDATE vente_items SET statut_vente = $1, cancellation_reason = $2, rendu_date = NOW() WHERE id = $3 AND vente_id = $4 RETURNING *',
       ['rendu', reason, vente_item_id, vente_id]
@@ -681,11 +682,10 @@ router.post('/mark-as-rendu', async (req, res) => {
       return res.status(404).json({ error: 'Article de vente non trouvé ou déjà marqué comme rendu.' });
     }
 
-    // 2. Remettre le produit en 'active' dans la table products SANS toucher à la date d'ajout
+    // 2. Remettre le produit en 'active' dans la table products SANS toucher à la date_ajout
+    // Et incrémenter la quantité existante (quantite + 1)
     if (produit_id) {
       await clientDb.query(
-        // Correction ici : on retire `date_ajout = NOW()`
-        // et on utilise `quantite = quantite + 1`
         'UPDATE products SET status = $1, quantite = quantite + 1 WHERE id = $2 AND imei = $3',
         ['active', produit_id, imei]
       );
@@ -695,7 +695,7 @@ router.post('/mark-as-rendu', async (req, res) => {
     const recalculatedSaleTotalResult = await clientDb.query(
       `SELECT COALESCE(SUM(vi.prix_unitaire_vente * vi.quantite_vendue), 0) AS new_montant_total
        FROM vente_items vi
-       WHERE vi.vente_id = $1 AND vi.statut_vente = 'actif'`,
+       WHERE vi.vente_id = $1 AND vi.statut_vente = 'actif'`, // Seuls les articles actifs comptent
       [vente_id]
     );
     const newMontantTotal = parseFloat(recalculatedSaleTotalResult.rows[0].new_montant_total);
@@ -708,8 +708,8 @@ router.post('/mark-as-rendu', async (req, res) => {
       newStatutPaiement = 'payee_integralement';
     } else if (currentMontantPaye > 0) {
       newStatutPaiement = 'paiement_partiel';
-    } else if (newMontantTotal === 0 && currentMontantPaye === 0) {
-      newStatutPaiement = 'annulee';
+    } else if (newMontantTotal === 0 && currentMontantPaye === 0) { // Cas où la vente est vide et rien n'a été payé
+      newStatutPaiement = 'annulee'; // Ou un statut spécifique pour les ventes rendues sans paiement
     }
 
 
@@ -722,7 +722,7 @@ router.post('/mark-as-rendu', async (req, res) => {
     // Calculer le nouveau montant_actuel_du pour la facture
     const newMontantActuelDu = newMontantTotal - currentMontantPaye;
 
-    // 4. Mettre à jour le statut de la facture associée
+    // Mettre à jour le statut de la facture associée
     await clientDb.query(
       'UPDATE factures SET statut_facture = $1, montant_original_facture = $2, montant_actuel_du = $3, montant_paye_facture = $4 WHERE vente_id = $5',
       [newStatutPaiement, newMontantTotal, newMontantActuelDu, currentMontantPaye, vente_id]
@@ -737,7 +737,7 @@ router.post('/mark-as-rendu', async (req, res) => {
 
     if (parseInt(inactive_items, 10) === parseInt(total_items, 10)) {
         await clientDb.query(
-            'UPDATE ventes SET statut_paiement = \'annulee\' WHERE id = $1',
+            'UPDATE ventes SET statut_paiement = \'annulee\' WHERE id = $1', // Ou un autre statut comme 'vente_rendue'
             [vente_id]
         );
         // Mettre à jour également la facture si la vente entière est annulée
@@ -762,6 +762,7 @@ router.post('/mark-as-rendu', async (req, res) => {
     }
   }
 });
+
 
 
 // Route pour générer un PDF de la facture pour une vente donnée
@@ -991,30 +992,29 @@ router.get('/:id/pdf', async (req, res) => {
 
   <div class="footer">
     <p>Merci pour votre achat !</p>
-    <p>Facture générée automatiquement</p>
   </div>
 </div>
 `;
 
-    const options = {
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    const page = await browser.newPage();
+    
+    // Utilisez page.setContent pour injecter votre HTML et attendre que le réseau soit inactif
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+    
+    const pdfBuffer = await page.pdf({
       format: 'A4',
-      orientation: 'portrait',
-      border: '1cm',
-      quality: '75',
-    };
-
-    pdf.create(htmlContent, options).toBuffer((err, buffer) => {
-      if (err) {
-        console.error('Erreur lors de la création du PDF:', err);
-        return res.status(500).json({ error: 'Erreur lors de la génération du PDF.' });
-      }
-      res.writeHead(200, {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename=facture_${venteId}.pdf`,
-        'Content-Length': buffer.length
-      });
-      res.end(buffer);
+      printBackground: true, // Pour que les couleurs de fond soient incluses
     });
+    
+    await browser.close();
+    
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename=facture_${venteId}.pdf`,
+      'Content-Length': pdfBuffer.length
+    });
+    res.send(pdfBuffer);
 
   } catch (error) {
     console.error('Erreur lors de la génération du PDF de la facture:', error);
