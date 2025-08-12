@@ -95,7 +95,7 @@ app.get('/api/reports/dashboard-stats', async (req, res) => {
 });
 
 
-// Route bénéfices
+// Route bénéfices (corrigée)
 app.get('/api/benefices', async (req, res) => {
   try {
     let query = `
@@ -117,11 +117,9 @@ app.get('/api/benefices', async (req, res) => {
           vente_items vi
       JOIN
           ventes v ON vi.vente_id = v.id
-      JOIN
-          factures f ON v.id = f.vente_id
       WHERE
           vi.statut_vente = 'actif'
-          AND f.statut_facture = 'payee_integralement'
+          AND v.statut_paiement = 'payee_integralement'
     `;
 
     const queryParams = [];
